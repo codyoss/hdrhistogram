@@ -120,6 +120,22 @@ func (h *Histogram) Merge(from *Histogram) (dropped int64) {
 	return
 }
 
+// Unmerge reverts merge of the data stored in the given histogram with the receiver,
+// returning the number of reverted values.
+func (h *Histogram) Unmerge(from *Histogram) (n int64) {
+	i := from.rIterator()
+	for i.next() {
+		v := i.valueFromIdx
+		c := i.countAtIdx
+
+		if h.UnrecordValues(v, c) != nil {
+			n += c
+		}
+	}
+
+	return
+}
+
 // TotalCount returns total number of values recorded.
 func (h *Histogram) TotalCount() int64 {
 	return h.totalCount
@@ -155,14 +171,15 @@ func (h *Histogram) Mean() float64 {
 	if h.totalCount == 0 {
 		return 0
 	}
-	var total int64
+	var mean float64
+	totalCount := float64(h.totalCount)
 	i := h.iterator()
 	for i.next() {
 		if i.countAtIdx != 0 {
-			total += i.countAtIdx * h.medianEquivalentValue(i.valueFromIdx)
+			mean += float64(i.countAtIdx*h.medianEquivalentValue(i.valueFromIdx)) / totalCount
 		}
 	}
-	return float64(total) / float64(h.totalCount)
+	return mean
 }
 
 // StdDev returns the approximate standard deviation of the recorded values.
@@ -173,16 +190,17 @@ func (h *Histogram) StdDev() float64 {
 
 	mean := h.Mean()
 	geometricDevTotal := 0.0
+	totalCount := float64(h.totalCount)
 
 	i := h.iterator()
 	for i.next() {
 		if i.countAtIdx != 0 {
 			dev := float64(h.medianEquivalentValue(i.valueFromIdx)) - mean
-			geometricDevTotal += (dev * dev) * float64(i.countAtIdx)
+			geometricDevTotal += (dev * dev) * float64(i.countAtIdx) / totalCount
 		}
 	}
 
-	return math.Sqrt(geometricDevTotal / float64(h.totalCount))
+	return math.Sqrt(geometricDevTotal)
 }
 
 // Reset deletes all recorded values and restores the histogram to its original
@@ -198,6 +216,12 @@ func (h *Histogram) Reset() {
 // of range.
 func (h *Histogram) RecordValue(v int64) error {
 	return h.RecordValues(v, 1)
+}
+
+// UnrecordValue reverts record of the given value, returning an error if the value is out
+// of range.
+func (h *Histogram) UnrecordValue(v int64) error {
+	return h.UnrecordValues(v, 1)
 }
 
 // RecordCorrectedValue records the given value, correcting for stalls in the
@@ -234,6 +258,18 @@ func (h *Histogram) RecordValues(v, n int64) error {
 	}
 	h.counts[idx] += n
 	h.totalCount += n
+	return nil
+}
+
+// UnrecordValues reverts record of n occurrences of the given value, returning an error if
+// the value is out of range.
+func (h *Histogram) UnrecordValues(v, n int64) error {
+	idx := h.countsIndexFor(v)
+	if idx < 0 || int(h.countsLen) <= idx {
+		return fmt.Errorf("value %d is too large to be unrecorded", v)
+	}
+	h.counts[idx] -= n
+	h.totalCount -= n
 
 	return nil
 }
@@ -293,9 +329,11 @@ func (h *Histogram) HighestTrackableValue() int64 {
 	return h.highestTrackableValue
 }
 
-// Histogram bar for plotting
+// Bar for plotting histograms
 type Bar struct {
-	From, To, Count int64
+	From  int64
+	To    int64
+	Count int64
 }
 
 // Pretty print as csv for easy plotting
@@ -347,22 +385,42 @@ func (h *Histogram) Equals(other *Histogram) bool {
 // Export returns a snapshot view of the Histogram. This can be later passed to
 // Import to construct a new Histogram with the same state.
 func (h *Histogram) Export() *Snapshot {
+	highestCount := int32(0)
+	found := int64(0)
+
+	for i := int32(0); i < h.countsLen; i++ {
+		if h.counts[i] > 0 {
+			highestCount = i
+		}
+	}
+
+	counts := make([]int64, 0, highestCount)
+
+	for i := int32(0); i <= highestCount; i++ {
+		if found >= h.totalCount {
+			break
+		}
+		counts = append(counts, h.counts[i])
+		found += h.counts[i]
+	}
+
 	return &Snapshot{
 		LowestTrackableValue:  h.lowestTrackableValue,
 		HighestTrackableValue: h.highestTrackableValue,
 		SignificantFigures:    h.significantFigures,
-		Counts:                append([]int64(nil), h.counts...), // copy
+		Counts:                counts,
 	}
 }
 
-// Import returns a new Histogram populated from the Snapshot data (which the
-// caller must stop accessing).
+// Import returns a new Histogram populated from the Snapshot data.
 func Import(s *Snapshot) *Histogram {
 	h := New(s.LowestTrackableValue, s.HighestTrackableValue, int(s.SignificantFigures))
-	h.counts = s.Counts
 	totalCount := int64(0)
-	for i := int32(0); i < h.countsLen; i++ {
+
+	for i := 0; i < len(s.Counts); i++ {
+		h.counts[i] = s.Counts[i]
 		countAtIndex := h.counts[i]
+
 		if countAtIndex > 0 {
 			totalCount += countAtIndex
 		}

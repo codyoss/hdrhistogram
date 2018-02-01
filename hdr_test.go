@@ -1,11 +1,12 @@
 package hdrhistogram_test
 
 import (
+	"encoding/json"
 	"math"
 	"reflect"
 	"testing"
 
-	"github.com/codahale/hdrhistogram"
+	"github.com/codyoss/hdrhistogram"
 )
 
 func TestHighSigFig(t *testing.T) {
@@ -76,7 +77,7 @@ func TestStdDev(t *testing.T) {
 		}
 	}
 
-	if v, want := h.StdDev(), 288675.1403682715; v != want {
+	if v, want := round(h.StdDev(), .000000005), round(288675.1403682715, .000000005); v != want {
 		t.Errorf("StdDev was %v, but expected %v", v, want)
 	}
 }
@@ -331,10 +332,10 @@ func TestSubBucketMaskOverflow(t *testing.T) {
 
 func TestExportImport(t *testing.T) {
 	min := int64(1)
-	max := int64(10000000)
-	sigfigs := 3
+	max := int64(1000)
+	sigfigs := 1
 	h := hdrhistogram.New(min, max, sigfigs)
-	for i := 0; i < 1000000; i++ {
+	for i := 0; i < 100; i++ {
 		if err := h.RecordValue(int64(i)); err != nil {
 			t.Fatal(err)
 		}
@@ -352,6 +353,18 @@ func TestExportImport(t *testing.T) {
 
 	if v := int(s.SignificantFigures); v != sigfigs {
 		t.Errorf("SignificantFigures was %v, but expected %v", v, sigfigs)
+	}
+
+	b, err := json.Marshal(s)
+
+	if err != nil {
+		t.Error("Could not encode snapshot to JSON")
+	}
+
+	j := string(b[:len(b)])
+
+	if j != "{\"LowestTrackableValue\":1,\"HighestTrackableValue\":1000,\"SignificantFigures\":1,\"Counts\":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,4,4,4,4,4,4,4,4,4]}" {
+		t.Error("Not converted to JSON correctly")
 	}
 
 	if imported := hdrhistogram.Import(s); !imported.Equals(h) {
@@ -385,4 +398,8 @@ func TestEquals(t *testing.T) {
 	if !h1.Equals(h2) {
 		t.Error("Expected Histograms to be equivalent")
 	}
+}
+
+func round(x, unit float64) float64 {
+	return float64(int64(x/unit+0.5)) * unit
 }
